@@ -4,8 +4,8 @@ import plotly.express as px
 from datetime import datetime
 
 # =====================================================
-# DFY SPARKS DLAR DASHBOARD
-# Entity-restricted Streamlit dashboard
+# DFY SPARKS DLAR DASHBOARD V2
+# Finds DFY Sparks stores across multiple possible columns
 # =====================================================
 
 st.set_page_config(
@@ -14,8 +14,7 @@ st.set_page_config(
     layout="wide"
 )
 
-ENTITY_NAME = "DFY Sparks"
-
+# Google Sheet CSV export URL
 DEFAULT_SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1p4oZCjqQuAW8fv0kLZ1lU2NtMQaMi6K7Z0gzZUPt1Iw"
@@ -24,9 +23,20 @@ DEFAULT_SHEET_CSV_URL = (
 
 SHEET_CSV_URL = st.secrets.get("SHEET_CSV_URL", DEFAULT_SHEET_CSV_URL)
 
+# Exact/partial entity keywords we want to include
+# This covers:
+# DFY Sparks
+# DFY-Sparks Inc
+# DFY Sparks 101
+DFY_KEYWORDS = [
+    "dfy sparks",
+    "dfy-sparks",
+    "dfy sparks 101",
+]
+
 
 # =====================================================
-# HELPERS
+# HELPER FUNCTIONS
 # =====================================================
 
 @st.cache_data(ttl=300)
@@ -44,13 +54,19 @@ def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def normalize_text(value):
-    if pd.isna(value):
-        return ""
-    return str(value).strip().lower()
+def normalize_series(series: pd.Series) -> pd.Series:
+    return (
+        series.astype(str)
+        .str.strip()
+        .str.lower()
+        .str.replace(r"\s+", " ", regex=True)
+    )
 
 
 def find_col(df: pd.DataFrame, possible_names: list[str]):
+    """
+    Finds a column by exact match first, then partial match.
+    """
     normalized_columns = {col.strip().lower(): col for col in df.columns}
 
     for name in possible_names:
@@ -73,7 +89,7 @@ def to_number(series: pd.Series) -> pd.Series:
         .str.replace(",", "", regex=False)
         .str.replace("$", "", regex=False)
         .str.strip()
-        .replace(["", "nan", "None"], "0")
+        .replace(["", "nan", "None", "NaN"], "0")
         .pipe(pd.to_numeric, errors="coerce")
         .fillna(0)
     )
@@ -86,17 +102,34 @@ def format_percent(value):
         return "0.0%"
 
 
+def build_dfy_mask(df: pd.DataFrame, candidate_cols: list[str]) -> pd.Series:
+    """
+    Creates a TRUE/FALSE mask for rows related to DFY Sparks.
+    It searches multiple columns instead of relying on only Sub-Agent Name.
+    """
+    mask = pd.Series(False, index=df.index)
+
+    for col in candidate_cols:
+        if col and col in df.columns:
+            values = normalize_series(df[col])
+
+            for keyword in DFY_KEYWORDS:
+                mask = mask | values.str.contains(keyword, na=False, regex=False)
+
+    return mask
+
+
 # =====================================================
 # LOAD DATA
 # =====================================================
 
 st.title("⚡ DFY Sparks DLAR Dashboard")
-st.caption("Restricted view: DFY Sparks entity only")
+st.caption("Restricted view for DFY Sparks / DFY-Sparks Inc / DFY Sparks 101")
 
 df = load_data(SHEET_CSV_URL)
 
 if df.empty:
-    st.warning("No data loaded. Please confirm the Google Sheet is shared as 'Anyone with the link can view'.")
+    st.warning("No data loaded. Check if Google Sheet sharing is set to: Anyone with the link → Viewer.")
     st.stop()
 
 df = clean_columns(df)
@@ -106,13 +139,24 @@ df = clean_columns(df)
 # COLUMN DETECTION
 # =====================================================
 
-entity_col = find_col(df, [
-    "Entity",
+sub_agent_col = find_col(df, [
     "Sub-Agent Name",
     "Sub Agent Name",
+    "Sub-Agent",
+    "Sub Agent",
+])
+
+entity_col = find_col(df, [
+    "Entity",
     "Dealer Entity",
     "Owner Entity",
+    "Ownership Entity",
+    "Entity Name",
+])
+
+master_agent_col = find_col(df, [
     "Master Agent",
+    "Master Agent Name",
 ])
 
 store_col = find_col(df, [
@@ -132,6 +176,7 @@ acts_col = find_col(df, [
 ])
 
 pacing_col = find_col(df, [
+    "Pacing Acts",
     "Pacing %",
     "Activation % to Target",
     "Activation Percentage to Target",
@@ -139,7 +184,8 @@ pacing_col = find_col(df, [
     "Act % to Target",
 ])
 
-mr_col = find_col(df, [
+retention_col = find_col(df, [
+    "Current TWP 3MR Acts",
     "4MR %",
     "4MR",
     "4 Month Retention",
@@ -157,36 +203,37 @@ status_col = find_col(df, ["Status"])
 market_col = find_col(df, ["Market"])
 region_col = find_col(df, ["Region"])
 rep_col = find_col(df, ["MA Field Rep", "Field Rep", "Rep", "DM"])
+store_phone_col = find_col(df, ["Store Phone Number", "Phone Number", "Store Phone"])
 
 
-if not entity_col:
-    st.error("Entity column not found. Please make sure the sheet has an Entity or Sub-Agent Name column.")
+# =====================================================
+# DFY SPARKS FILTER
+# =====================================================
+
+candidate_entity_cols = [
+    sub_agent_col,
+    entity_col,
+    master_agent_col,
+]
+
+# Remove None and duplicates
+candidate_entity_cols = list(dict.fromkeys([c for c in candidate_entity_cols if c]))
+
+if not candidate_entity_cols:
+    st.error("Could not find any entity-related column such as Sub-Agent Name, Entity, or Master Agent.")
     with st.expander("Detected columns"):
         st.write(list(df.columns))
     st.stop()
 
-
-# =====================================================
-# DFY SPARKS ONLY FILTER
-# =====================================================
-
-VALID_ENTITY_NAMES = [
-    "dfy sparks",
-    "dfy-sparks inc"
-]
-
-df_entity = df[
-    df[entity_col]
-    .astype(str)
-    .str.strip()
-    .str.lower()
-    .isin(VALID_ENTITY_NAMES)
-].copy()
+dfy_mask = build_dfy_mask(df, candidate_entity_cols)
+df_entity = df[dfy_mask].copy()
 
 if df_entity.empty:
-    st.warning(f"No records found for entity: {ENTITY_NAME}")
-    with st.expander("Entity values found in the sheet"):
-        st.write(sorted(df[entity_col].dropna().astype(str).unique()))
+    st.warning("No DFY Sparks records found.")
+    with st.expander("Entity search columns checked"):
+        st.write(candidate_entity_cols)
+    with st.expander("Detected columns"):
+        st.write(list(df.columns))
     st.stop()
 
 
@@ -200,16 +247,16 @@ if acts_col:
 if pacing_col:
     df_entity[pacing_col] = to_number(df_entity[pacing_col])
 
-if mr_col:
-    df_entity[mr_col] = to_number(df_entity[mr_col])
+if retention_col:
+    df_entity[retention_col] = to_number(df_entity[retention_col])
 
 
 # =====================================================
-# SIDEBAR
+# SIDEBAR FILTERS
 # =====================================================
 
 st.sidebar.header("Dashboard Filters")
-st.sidebar.caption("This app is locked to DFY Sparks only.")
+st.sidebar.caption("Locked to DFY Sparks-related entities only.")
 
 filtered = df_entity.copy()
 
@@ -234,7 +281,7 @@ if market_col:
 search_term = st.sidebar.text_input("Search store / address / city")
 
 if search_term:
-    search_columns = [c for c in [store_col, address_col, city_col, state_col, zip_col] if c]
+    search_columns = [c for c in [store_col, address_col, city_col, state_col, zip_col, store_phone_col] if c]
     if search_columns:
         mask = pd.Series(False, index=filtered.index)
         for c in search_columns:
@@ -250,14 +297,43 @@ total_rows = len(filtered)
 total_stores = filtered[store_col].nunique() if store_col else total_rows
 total_acts = filtered[acts_col].sum() if acts_col else 0
 avg_pacing = filtered[pacing_col].mean() if pacing_col else 0
-avg_retention = filtered[mr_col].mean() if mr_col else 0
+avg_retention = filtered[retention_col].mean() if retention_col else 0
 
 k1, k2, k3, k4 = st.columns(4)
 
 k1.metric("Stores", f"{total_stores:,.0f}")
 k2.metric("Current Acts", f"{total_acts:,.0f}")
 k3.metric("Avg Pacing", format_percent(avg_pacing))
-k4.metric("Avg Retention", format_percent(avg_retention))
+k4.metric("Avg Retention / 3MR", format_percent(avg_retention))
+
+
+# =====================================================
+# ENTITY NAME BREAKDOWN
+# =====================================================
+
+st.divider()
+st.subheader("DFY Sparks Entity Breakdown")
+
+breakdown_cols = [c for c in candidate_entity_cols if c in filtered.columns]
+
+if breakdown_cols:
+    breakdown_data = []
+    for col in breakdown_cols:
+        temp = (
+            filtered.groupby(col, dropna=False)
+            .agg(
+                Stores=(store_col, "nunique") if store_col else (col, "count"),
+                Rows=(col, "count"),
+                Current_Acts=(acts_col, "sum") if acts_col else (col, "count"),
+            )
+            .reset_index()
+        )
+        temp.insert(0, "Source Column", col)
+        temp = temp.rename(columns={col: "Entity Value"})
+        breakdown_data.append(temp)
+
+    entity_breakdown = pd.concat(breakdown_data, ignore_index=True)
+    st.dataframe(entity_breakdown, use_container_width=True, hide_index=True)
 
 
 # =====================================================
@@ -267,24 +343,24 @@ k4.metric("Avg Retention", format_percent(avg_retention))
 st.divider()
 st.subheader("Executive Summary")
 
-summary_left, summary_right = st.columns([2, 1])
+left, right = st.columns([2, 1])
 
-with summary_left:
+with left:
     st.write(
         f"""
-        **DFY Sparks** currently has **{total_stores:,.0f} store(s)** in this filtered view, 
+        **DFY Sparks group** currently shows **{total_stores:,.0f} store(s)** in this dashboard, 
         with **{total_acts:,.0f} current activation(s)**.
 
-        Average pacing is **{avg_pacing:.1f}%** and average retention is **{avg_retention:.1f}%**.
+        Average pacing is **{avg_pacing:.1f}%** and average retention / 3MR metric is **{avg_retention:.1f}%**.
         """
     )
 
-with summary_right:
+with right:
     st.info(f"Last refreshed: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
 
 
 # =====================================================
-# CHARTS
+# PERFORMANCE CHARTS
 # =====================================================
 
 st.divider()
@@ -322,33 +398,33 @@ if store_col and pacing_col:
         x=store_col,
         y=pacing_col,
         text=pacing_col,
-        title="Average Pacing % by Store"
+        title="Average Pacing by Store"
     )
-    fig2.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-    fig2.update_layout(xaxis_title="Store", yaxis_title="Pacing %")
+    fig2.update_traces(texttemplate="%{text:.1f}", textposition="outside")
+    fig2.update_layout(xaxis_title="Store", yaxis_title="Pacing")
     st.plotly_chart(fig2, use_container_width=True)
 
-if store_col and mr_col:
-    mr_df = (
-        filtered.groupby(store_col, as_index=False)[mr_col]
+if store_col and retention_col:
+    retention_df = (
+        filtered.groupby(store_col, as_index=False)[retention_col]
         .mean()
-        .sort_values(mr_col, ascending=False)
+        .sort_values(retention_col, ascending=False)
     )
 
     fig3 = px.bar(
-        mr_df,
+        retention_df,
         x=store_col,
-        y=mr_col,
-        text=mr_col,
-        title="Average Retention % by Store"
+        y=retention_col,
+        text=retention_col,
+        title="Average Retention / 3MR by Store"
     )
-    fig3.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
-    fig3.update_layout(xaxis_title="Store", yaxis_title="Retention %")
+    fig3.update_traces(texttemplate="%{text:.1f}", textposition="outside")
+    fig3.update_layout(xaxis_title="Store", yaxis_title="Retention / 3MR")
     st.plotly_chart(fig3, use_container_width=True)
 
 
 # =====================================================
-# STORE TABLE
+# STORE DETAIL TABLE
 # =====================================================
 
 st.divider()
@@ -356,7 +432,9 @@ st.subheader("DFY Sparks Store Detail")
 
 preferred_cols = [
     store_col,
+    sub_agent_col,
     entity_col,
+    master_agent_col,
     address_col,
     city_col,
     state_col,
@@ -365,9 +443,10 @@ preferred_cols = [
     market_col,
     region_col,
     rep_col,
+    store_phone_col,
     acts_col,
     pacing_col,
-    mr_col,
+    retention_col,
 ]
 
 display_cols = []
@@ -398,19 +477,33 @@ st.download_button(
 # =====================================================
 
 with st.expander("Debug / Column Mapping"):
-    st.write({
+    st.write("Candidate entity columns searched:")
+    st.write(candidate_entity_cols)
+
+    st.write("Column mapping:")
+    st.json({
+        "sub_agent_col": sub_agent_col,
         "entity_col": entity_col,
+        "master_agent_col": master_agent_col,
         "store_col": store_col,
         "acts_col": acts_col,
         "pacing_col": pacing_col,
-        "retention_col": mr_col,
+        "retention_col": retention_col,
         "address_col": address_col,
         "city_col": city_col,
         "state_col": state_col,
+        "zip_col": zip_col,
         "status_col": status_col,
         "market_col": market_col,
         "region_col": region_col,
         "rep_col": rep_col,
+        "store_phone_col": store_phone_col,
     })
+
+    st.write("Unique values from searched entity columns:")
+    for col in candidate_entity_cols:
+        st.write(f"### {col}")
+        st.write(sorted(df[col].dropna().astype(str).unique()))
+
     st.write("All detected columns:")
     st.write(list(df.columns))
