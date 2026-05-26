@@ -186,40 +186,40 @@ for col in [
 
 
 # =========================
-# SIDEBAR FILTERS
+# SIMPLE SEARCH ONLY
 # =========================
-
-st.sidebar.header("Dashboard Filters")
-st.sidebar.caption("DFY Sparks only")
 
 filtered = df_entity.copy()
 
-if status_col:
-    status_options = sorted(filtered[status_col].dropna().astype(str).unique())
-    selected_status = st.sidebar.multiselect("Status", status_options, default=status_options)
-    if selected_status:
-        filtered = filtered[filtered[status_col].astype(str).isin(selected_status)]
+st.sidebar.header("Search")
+st.sidebar.caption("DFY Sparks only")
 
-if city_col:
-    city_options = sorted(filtered[city_col].dropna().astype(str).unique())
-    selected_city = st.sidebar.multiselect("City", city_options, default=city_options)
-    if selected_city:
-        filtered = filtered[filtered[city_col].astype(str).isin(selected_city)]
-
-if market_col:
-    market_options = sorted(filtered[market_col].dropna().astype(str).unique())
-    selected_market = st.sidebar.multiselect("Market", market_options, default=market_options)
-    if selected_market:
-        filtered = filtered[filtered[market_col].astype(str).isin(selected_market)]
-
-search_term = st.sidebar.text_input("Search door / address")
+search_term = st.sidebar.text_input(
+    "Search Store / Address / City / Rep",
+    placeholder="Search..."
+)
 
 if search_term:
-    search_columns = [c for c in [door_tsp_col, address_col] if c]
+    search_columns = [
+        c for c in [
+            door_tsp_col,
+            address_col,
+            city_col,
+            market_col,
+            rep_col,
+            status_col,
+        ]
+        if c
+    ]
+
     mask = pd.Series(False, index=filtered.index)
 
     for c in search_columns:
-        mask = mask | filtered[c].astype(str).str.contains(search_term, case=False, na=False)
+        mask = mask | filtered[c].astype(str).str.contains(
+            search_term,
+            case=False,
+            na=False
+        )
 
     filtered = filtered[mask]
 
@@ -311,8 +311,13 @@ for source, label in base_display_map:
         base_cols.append(source)
         rename_map[source] = label
 
+
+# =========================
+# ADDITIONAL COLUMN SELECTOR
+# =========================
+
 st.sidebar.divider()
-st.sidebar.subheader("Additional Columns")
+st.sidebar.header("Additional Columns")
 
 suggested_extra_cols = [
     c for c in [
@@ -335,13 +340,8 @@ all_extra_cols = [
     if col not in base_cols
 ]
 
-default_extra_cols = [
-    col for col in suggested_extra_cols
-    if col in all_extra_cols
-]
-
 extra_cols = st.sidebar.multiselect(
-    "Select more info to show",
+    "Show more columns",
     options=all_extra_cols,
     default=[],
 )
@@ -355,7 +355,6 @@ if final_selected_cols:
         detail_df = detail_df.sort_values("Current Acts", ascending=False)
 
     row_count = len(detail_df)
-
     table_height = max(420, row_count * 38 + 45)
 
     st.dataframe(
