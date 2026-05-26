@@ -170,8 +170,17 @@ if not entity_col:
 # DFY SPARKS ONLY FILTER
 # =====================================================
 
+VALID_ENTITY_NAMES = [
+    "dfy sparks",
+    "dfy-sparks inc"
+]
+
 df_entity = df[
-    df[entity_col].astype(str).str.strip().str.lower() == ENTITY_NAME.lower()
+    df[entity_col]
+    .astype(str)
+    .str.strip()
+    .str.lower()
+    .isin(VALID_ENTITY_NAMES)
 ].copy()
 
 if df_entity.empty:
