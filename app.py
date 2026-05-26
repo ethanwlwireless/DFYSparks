@@ -4,8 +4,8 @@ import plotly.express as px
 from datetime import datetime
 
 # =====================================================
-# DFY SPARKS DLAR DASHBOARD V2
-# Finds DFY Sparks stores across multiple possible columns
+# DFY SPARKS DLAR DASHBOARD V3
+# Clean operating dashboard for DFY Sparks only
 # =====================================================
 
 st.set_page_config(
@@ -14,7 +14,6 @@ st.set_page_config(
     layout="wide"
 )
 
-# Google Sheet CSV export URL
 DEFAULT_SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
     "1p4oZCjqQuAW8fv0kLZ1lU2NtMQaMi6K7Z0gzZUPt1Iw"
@@ -23,11 +22,6 @@ DEFAULT_SHEET_CSV_URL = (
 
 SHEET_CSV_URL = st.secrets.get("SHEET_CSV_URL", DEFAULT_SHEET_CSV_URL)
 
-# Exact/partial entity keywords we want to include
-# This covers:
-# DFY Sparks
-# DFY-Sparks Inc
-# DFY Sparks 101
 DFY_KEYWORDS = [
     "dfy sparks",
     "dfy-sparks",
@@ -36,7 +30,7 @@ DFY_KEYWORDS = [
 
 
 # =====================================================
-# HELPER FUNCTIONS
+# HELPERS
 # =====================================================
 
 @st.cache_data(ttl=300)
@@ -64,9 +58,6 @@ def normalize_series(series: pd.Series) -> pd.Series:
 
 
 def find_col(df: pd.DataFrame, possible_names: list[str]):
-    """
-    Finds a column by exact match first, then partial match.
-    """
     normalized_columns = {col.strip().lower(): col for col in df.columns}
 
     for name in possible_names:
@@ -89,13 +80,13 @@ def to_number(series: pd.Series) -> pd.Series:
         .str.replace(",", "", regex=False)
         .str.replace("$", "", regex=False)
         .str.strip()
-        .replace(["", "nan", "None", "NaN"], "0")
+        .replace(["", "nan", "None", "NaN", "-"], "0")
         .pipe(pd.to_numeric, errors="coerce")
         .fillna(0)
     )
 
 
-def format_percent(value):
+def pct_text(value):
     try:
         return f"{float(value):.1f}%"
     except Exception:
@@ -103,20 +94,35 @@ def format_percent(value):
 
 
 def build_dfy_mask(df: pd.DataFrame, candidate_cols: list[str]) -> pd.Series:
-    """
-    Creates a TRUE/FALSE mask for rows related to DFY Sparks.
-    It searches multiple columns instead of relying on only Sub-Agent Name.
-    """
     mask = pd.Series(False, index=df.index)
 
     for col in candidate_cols:
         if col and col in df.columns:
             values = normalize_series(df[col])
-
             for keyword in DFY_KEYWORDS:
                 mask = mask | values.str.contains(keyword, na=False, regex=False)
 
     return mask
+
+
+def add_percent_column(df: pd.DataFrame, source_col: str, new_col: str) -> pd.DataFrame:
+    """
+    Creates display-friendly percentage text column.
+    If source values are already 0-100, keeps them.
+    If source values look like decimals 0-1, converts to 0-100.
+    """
+    if not source_col or source_col not in df.columns:
+        return df
+
+    numeric = to_number(df[source_col])
+
+    # If most values are between 0 and 1, treat as decimal percentage.
+    nonzero = numeric[numeric != 0]
+    if len(nonzero) > 0 and nonzero.abs().max() <= 1:
+        numeric = numeric * 100
+
+    df[new_col] = numeric.map(lambda x: f"{x:.1f}%")
+    return df
 
 
 # =====================================================
@@ -124,7 +130,7 @@ def build_dfy_mask(df: pd.DataFrame, candidate_cols: list[str]) -> pd.Series:
 # =====================================================
 
 st.title("⚡ DFY Sparks DLAR Dashboard")
-st.caption("Restricted view for DFY Sparks / DFY-Sparks Inc / DFY Sparks 101")
+st.caption("Restricted dashboard for DFY Sparks / DFY-Sparks Inc / DFY Sparks 101")
 
 df = load_data(SHEET_CSV_URL)
 
@@ -159,51 +165,88 @@ master_agent_col = find_col(df, [
     "Master Agent Name",
 ])
 
-store_col = find_col(df, [
-    "Store ID",
+door_tsp_col = find_col(df, [
     "Door TSP",
+    "Store ID",
     "TSP ID",
     "Door ID",
     "Store",
 ])
 
-acts_col = find_col(df, [
+address_col = find_col(df, [
+    "Address",
+    "Store Address",
+])
+
+status_col = find_col(df, ["Status"])
+city_col = find_col(df, ["City"])
+market_col = find_col(df, ["Market"])
+
+current_acts_col = find_col(df, [
     "Current Acts",
     "Current Activations",
-    "Activation",
+    "Current Activation",
     "Activations",
     "Acts",
 ])
 
-pacing_col = find_col(df, [
+pacing_acts_col = find_col(df, [
     "Pacing Acts",
+    "Pacing Act",
+    "Pacing Activations",
+])
+
+pacing_pct_col = find_col(df, [
+    "Pacing % to Quota",
+    "Pacing % to quota",
+    "Pacing % To Quota",
     "Pacing %",
     "Activation % to Target",
     "Activation Percentage to Target",
-    "Pacing",
     "Act % to Target",
 ])
 
-retention_col = find_col(df, [
-    "Current TWP 3MR Acts",
+current_4mr_pct_col = find_col(df, [
+    "Current 4MR%",
+    "Current 4MR %",
     "4MR %",
-    "4MR",
-    "4 Month Retention",
-    "4 Month Retention %",
-    "Retention %",
+    "4MR%",
+    "Current TWP 4MR %",
+    "Current TWP 3MR Acts",
     "3MR %",
-    "3MR",
+    "Current 3MR %",
 ])
 
-address_col = find_col(df, ["Address", "Store Address"])
-city_col = find_col(df, ["City"])
-state_col = find_col(df, ["State"])
-zip_col = find_col(df, ["Zip Code", "Zip"])
-status_col = find_col(df, ["Status"])
-market_col = find_col(df, ["Market"])
-region_col = find_col(df, ["Region"])
-rep_col = find_col(df, ["MA Field Rep", "Field Rep", "Rep", "DM"])
-store_phone_col = find_col(df, ["Store Phone Number", "Phone Number", "Store Phone"])
+current_topups_col = find_col(df, [
+    "Current Topups",
+    "Current Top Ups",
+    "Current Top-Ups",
+    "Topups",
+    "Top Ups",
+    "Top-Ups",
+])
+
+edge_apply_col = find_col(df, [
+    "Current Edge Apply",
+    "Edge Apply",
+    "Current Edge Applies",
+    "Edge Applies",
+])
+
+edge_approve_col = find_col(df, [
+    "Current Edge Approve",
+    "Edge Approve",
+    "Current Edge Approved",
+    "Edge Approved",
+    "Edge Approvals",
+])
+
+edge_acts_col = find_col(df, [
+    "Current Edge Acts",
+    "Edge Acts",
+    "Current Edge Activations",
+    "Edge Activations",
+])
 
 
 # =====================================================
@@ -216,11 +259,10 @@ candidate_entity_cols = [
     master_agent_col,
 ]
 
-# Remove None and duplicates
 candidate_entity_cols = list(dict.fromkeys([c for c in candidate_entity_cols if c]))
 
 if not candidate_entity_cols:
-    st.error("Could not find any entity-related column such as Sub-Agent Name, Entity, or Master Agent.")
+    st.error("Could not find Sub-Agent Name, Entity, or Master Agent column.")
     with st.expander("Detected columns"):
         st.write(list(df.columns))
     st.stop()
@@ -241,14 +283,20 @@ if df_entity.empty:
 # NUMERIC CLEANING
 # =====================================================
 
-if acts_col:
-    df_entity[acts_col] = to_number(df_entity[acts_col])
+numeric_cols = [
+    current_acts_col,
+    pacing_acts_col,
+    pacing_pct_col,
+    current_4mr_pct_col,
+    current_topups_col,
+    edge_apply_col,
+    edge_approve_col,
+    edge_acts_col,
+]
 
-if pacing_col:
-    df_entity[pacing_col] = to_number(df_entity[pacing_col])
-
-if retention_col:
-    df_entity[retention_col] = to_number(df_entity[retention_col])
+for col in numeric_cols:
+    if col and col in df_entity.columns:
+        df_entity[col] = to_number(df_entity[col])
 
 
 # =====================================================
@@ -278,10 +326,10 @@ if market_col:
     if selected_market:
         filtered = filtered[filtered[market_col].astype(str).isin(selected_market)]
 
-search_term = st.sidebar.text_input("Search store / address / city")
+search_term = st.sidebar.text_input("Search door / address")
 
 if search_term:
-    search_columns = [c for c in [store_col, address_col, city_col, state_col, zip_col, store_phone_col] if c]
+    search_columns = [c for c in [door_tsp_col, address_col] if c]
     if search_columns:
         mask = pd.Series(False, index=filtered.index)
         for c in search_columns:
@@ -290,50 +338,44 @@ if search_term:
 
 
 # =====================================================
-# KPI SUMMARY
+# DIRECT CALCULATIONS
 # =====================================================
 
-total_rows = len(filtered)
-total_stores = filtered[store_col].nunique() if store_col else total_rows
-total_acts = filtered[acts_col].sum() if acts_col else 0
-avg_pacing = filtered[pacing_col].mean() if pacing_col else 0
-avg_retention = filtered[retention_col].mean() if retention_col else 0
+total_stores = filtered[door_tsp_col].nunique() if door_tsp_col else len(filtered)
+total_current_acts = filtered[current_acts_col].sum() if current_acts_col else 0
+
+# Direct calculation for Avg Pacing:
+# Total Current Acts / Total Pacing Acts * 100
+if current_acts_col and pacing_acts_col and filtered[pacing_acts_col].sum() != 0:
+    avg_pacing = (filtered[current_acts_col].sum() / filtered[pacing_acts_col].sum()) * 100
+elif pacing_pct_col:
+    avg_pacing = filtered[pacing_pct_col].mean()
+else:
+    avg_pacing = 0
+
+# Direct calculation for Average 4MR %
+# Uses average of detected Current 4MR% column.
+# If values are decimal-style, converts to percent.
+if current_4mr_pct_col:
+    four_mr_values = filtered[current_4mr_pct_col].copy()
+    nonzero_4mr = four_mr_values[four_mr_values != 0]
+    if len(nonzero_4mr) > 0 and nonzero_4mr.abs().max() <= 1:
+        four_mr_values = four_mr_values * 100
+    avg_4mr = four_mr_values.mean()
+else:
+    avg_4mr = 0
+
+
+# =====================================================
+# KPI CARDS
+# =====================================================
 
 k1, k2, k3, k4 = st.columns(4)
 
 k1.metric("Stores", f"{total_stores:,.0f}")
-k2.metric("Current Acts", f"{total_acts:,.0f}")
-k3.metric("Avg Pacing", format_percent(avg_pacing))
-k4.metric("Avg Retention / 3MR", format_percent(avg_retention))
-
-
-# =====================================================
-# ENTITY NAME BREAKDOWN
-# =====================================================
-
-st.divider()
-st.subheader("DFY Sparks Entity Breakdown")
-
-breakdown_cols = [c for c in candidate_entity_cols if c in filtered.columns]
-
-if breakdown_cols:
-    breakdown_data = []
-    for col in breakdown_cols:
-        temp = (
-            filtered.groupby(col, dropna=False)
-            .agg(
-                Stores=(store_col, "nunique") if store_col else (col, "count"),
-                Rows=(col, "count"),
-                Current_Acts=(acts_col, "sum") if acts_col else (col, "count"),
-            )
-            .reset_index()
-        )
-        temp.insert(0, "Source Column", col)
-        temp = temp.rename(columns={col: "Entity Value"})
-        breakdown_data.append(temp)
-
-    entity_breakdown = pd.concat(breakdown_data, ignore_index=True)
-    st.dataframe(entity_breakdown, use_container_width=True, hide_index=True)
+k2.metric("Current Acts", f"{total_current_acts:,.0f}")
+k3.metric("Avg Pacing", pct_text(avg_pacing))
+k4.metric("Average 4MR %", pct_text(avg_4mr))
 
 
 # =====================================================
@@ -348,10 +390,11 @@ left, right = st.columns([2, 1])
 with left:
     st.write(
         f"""
-        **DFY Sparks group** currently shows **{total_stores:,.0f} store(s)** in this dashboard, 
-        with **{total_acts:,.0f} current activation(s)**.
+        **DFY Sparks** currently shows **{total_stores:,.0f} store(s)** with 
+        **{total_current_acts:,.0f} current activation(s)**.
 
-        Average pacing is **{avg_pacing:.1f}%** and average retention / 3MR metric is **{avg_retention:.1f}%**.
+        Average pacing is calculated directly as **Current Acts ÷ Pacing Acts**, showing **{avg_pacing:.1f}%**.
+        Average 4MR is calculated from the store-level 4MR values, showing **{avg_4mr:.1f}%**.
         """
     )
 
@@ -366,61 +409,53 @@ with right:
 st.divider()
 st.subheader("Performance Charts")
 
-if store_col and acts_col:
-    chart_df = (
-        filtered.groupby(store_col, as_index=False)[acts_col]
+if door_tsp_col and current_acts_col:
+    acts_chart = (
+        filtered.groupby(door_tsp_col, as_index=False)[current_acts_col]
         .sum()
-        .sort_values(acts_col, ascending=False)
+        .sort_values(current_acts_col, ascending=False)
     )
 
     fig = px.bar(
-        chart_df,
-        x=store_col,
-        y=acts_col,
-        text=acts_col,
+        acts_chart,
+        x=door_tsp_col,
+        y=current_acts_col,
+        text=current_acts_col,
         title="Current Acts by Store"
     )
     fig.update_traces(texttemplate="%{text:.0f}", textposition="outside")
-    fig.update_layout(xaxis_title="Store", yaxis_title="Current Acts")
+    fig.update_layout(xaxis_title="Door TSP", yaxis_title="Current Acts")
     st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning("Current Acts chart unavailable because Store ID or Current Acts column was not found.")
+    st.warning("Current Acts by Store chart unavailable. Door TSP or Current Acts column was not found.")
 
-if store_col and pacing_col:
-    pacing_df = (
-        filtered.groupby(store_col, as_index=False)[pacing_col]
+if door_tsp_col and current_4mr_pct_col:
+    mr_chart = filtered.copy()
+
+    # Normalize 4MR for chart display
+    mr_chart["_4MR_PERCENT_FOR_CHART"] = mr_chart[current_4mr_pct_col]
+    nonzero_chart = mr_chart["_4MR_PERCENT_FOR_CHART"][mr_chart["_4MR_PERCENT_FOR_CHART"] != 0]
+    if len(nonzero_chart) > 0 and nonzero_chart.abs().max() <= 1:
+        mr_chart["_4MR_PERCENT_FOR_CHART"] = mr_chart["_4MR_PERCENT_FOR_CHART"] * 100
+
+    mr_chart = (
+        mr_chart.groupby(door_tsp_col, as_index=False)["_4MR_PERCENT_FOR_CHART"]
         .mean()
-        .sort_values(pacing_col, ascending=False)
+        .sort_values("_4MR_PERCENT_FOR_CHART", ascending=False)
     )
 
     fig2 = px.bar(
-        pacing_df,
-        x=store_col,
-        y=pacing_col,
-        text=pacing_col,
-        title="Average Pacing by Store"
+        mr_chart,
+        x=door_tsp_col,
+        y="_4MR_PERCENT_FOR_CHART",
+        text="_4MR_PERCENT_FOR_CHART",
+        title="4MR % by Store"
     )
-    fig2.update_traces(texttemplate="%{text:.1f}", textposition="outside")
-    fig2.update_layout(xaxis_title="Store", yaxis_title="Pacing")
+    fig2.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+    fig2.update_layout(xaxis_title="Door TSP", yaxis_title="4MR %")
     st.plotly_chart(fig2, use_container_width=True)
-
-if store_col and retention_col:
-    retention_df = (
-        filtered.groupby(store_col, as_index=False)[retention_col]
-        .mean()
-        .sort_values(retention_col, ascending=False)
-    )
-
-    fig3 = px.bar(
-        retention_df,
-        x=store_col,
-        y=retention_col,
-        text=retention_col,
-        title="Average Retention / 3MR by Store"
-    )
-    fig3.update_traces(texttemplate="%{text:.1f}", textposition="outside")
-    fig3.update_layout(xaxis_title="Store", yaxis_title="Retention / 3MR")
-    st.plotly_chart(fig3, use_container_width=True)
+else:
+    st.warning("4MR % by Store chart unavailable. Door TSP or Current 4MR% column was not found.")
 
 
 # =====================================================
@@ -430,46 +465,71 @@ if store_col and retention_col:
 st.divider()
 st.subheader("DFY Sparks Store Detail")
 
-preferred_cols = [
-    store_col,
-    sub_agent_col,
-    entity_col,
-    master_agent_col,
-    address_col,
-    city_col,
-    state_col,
-    zip_col,
-    status_col,
-    market_col,
-    region_col,
-    rep_col,
-    store_phone_col,
-    acts_col,
-    pacing_col,
-    retention_col,
-]
+table = filtered.copy()
 
-display_cols = []
-for col in preferred_cols:
-    if col and col in filtered.columns and col not in display_cols:
-        display_cols.append(col)
+# Add display percent columns
+if pacing_pct_col:
+    table = add_percent_column(table, pacing_pct_col, "Pacing % to Quota")
+elif current_acts_col and pacing_acts_col:
+    denom = table[pacing_acts_col].replace(0, pd.NA)
+    table["Pacing % to Quota"] = ((table[current_acts_col] / denom) * 100).fillna(0).map(lambda x: f"{x:.1f}%")
 
-if display_cols:
-    st.dataframe(filtered[display_cols], use_container_width=True, hide_index=True)
+if current_4mr_pct_col:
+    table = add_percent_column(table, current_4mr_pct_col, "Current 4MR %")
+
+# Create clean display columns
+display_map = []
+
+if door_tsp_col:
+    display_map.append((door_tsp_col, "Door TSP"))
+if address_col:
+    display_map.append((address_col, "Address"))
+if current_acts_col:
+    display_map.append((current_acts_col, "Current Acts"))
+if pacing_acts_col:
+    display_map.append((pacing_acts_col, "Pacing Acts"))
+
+display_map.append(("Pacing % to Quota", "Pacing % to Quota"))
+
+display_map.append(("Current 4MR %", "Current 4MR %"))
+
+if current_topups_col:
+    display_map.append((current_topups_col, "Current Topups"))
+if edge_apply_col:
+    display_map.append((edge_apply_col, "Current Edge Apply"))
+if edge_approve_col:
+    display_map.append((edge_approve_col, "Current Edge Approve"))
+if edge_acts_col:
+    display_map.append((edge_acts_col, "Current Edge Acts"))
+
+final_cols = {}
+for source, label in display_map:
+    if source in table.columns:
+        final_cols[source] = label
+
+if final_cols:
+    detail_df = table[list(final_cols.keys())].rename(columns=final_cols)
+
+    # Sort by Current Acts if present
+    if "Current Acts" in detail_df.columns:
+        detail_df = detail_df.sort_values("Current Acts", ascending=False)
+
+    st.dataframe(detail_df, use_container_width=True, hide_index=True)
 else:
-    st.dataframe(filtered, use_container_width=True, hide_index=True)
+    st.warning("Could not build the requested store detail table because matching columns were not found.")
 
 
 # =====================================================
 # DOWNLOAD
 # =====================================================
 
-st.download_button(
-    label="Download DFY Sparks CSV",
-    data=filtered.to_csv(index=False).encode("utf-8"),
-    file_name="dfy_sparks_dlar_filtered.csv",
-    mime="text/csv"
-)
+if final_cols:
+    st.download_button(
+        label="Download DFY Sparks Store Detail CSV",
+        data=detail_df.to_csv(index=False).encode("utf-8"),
+        file_name="dfy_sparks_store_detail.csv",
+        mime="text/csv"
+    )
 
 
 # =====================================================
@@ -477,7 +537,7 @@ st.download_button(
 # =====================================================
 
 with st.expander("Debug / Column Mapping"):
-    st.write("Candidate entity columns searched:")
+    st.write("Entity columns searched:")
     st.write(candidate_entity_cols)
 
     st.write("Column mapping:")
@@ -485,25 +545,20 @@ with st.expander("Debug / Column Mapping"):
         "sub_agent_col": sub_agent_col,
         "entity_col": entity_col,
         "master_agent_col": master_agent_col,
-        "store_col": store_col,
-        "acts_col": acts_col,
-        "pacing_col": pacing_col,
-        "retention_col": retention_col,
+        "door_tsp_col": door_tsp_col,
         "address_col": address_col,
-        "city_col": city_col,
-        "state_col": state_col,
-        "zip_col": zip_col,
+        "current_acts_col": current_acts_col,
+        "pacing_acts_col": pacing_acts_col,
+        "pacing_pct_col": pacing_pct_col,
+        "current_4mr_pct_col": current_4mr_pct_col,
+        "current_topups_col": current_topups_col,
+        "edge_apply_col": edge_apply_col,
+        "edge_approve_col": edge_approve_col,
+        "edge_acts_col": edge_acts_col,
         "status_col": status_col,
+        "city_col": city_col,
         "market_col": market_col,
-        "region_col": region_col,
-        "rep_col": rep_col,
-        "store_phone_col": store_phone_col,
     })
-
-    st.write("Unique values from searched entity columns:")
-    for col in candidate_entity_cols:
-        st.write(f"### {col}")
-        st.write(sorted(df[col].dropna().astype(str).unique()))
 
     st.write("All detected columns:")
     st.write(list(df.columns))
