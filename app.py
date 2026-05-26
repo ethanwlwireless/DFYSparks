@@ -376,28 +376,3 @@ else:
 st.caption(f"Last refreshed: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
 
 
-# =========================
-# DEBUG
-# =========================
-
-with st.expander("Debug / Column Mapping"):
-    st.json({
-        "entity_columns_searched": candidate_entity_cols,
-        "door_tsp_col": door_tsp_col,
-        "address_col": address_col,
-        "current_acts_col": current_acts_col,
-        "pacing_acts_col": pacing_acts_col,
-        "pacing_pct_col": pacing_pct_col,
-        "current_4mr_pct_col": current_4mr_pct_col,
-        "current_topups_col": current_topups_col,
-        "edge_apply_col": edge_apply_col,
-        "edge_approve_col": edge_approve_col,
-        "edge_acts_col": edge_acts_col,
-        "status_col": status_col,
-        "city_col": city_col,
-        "state_col": state_col,
-        "zip_col": zip_col,
-        "market_col": market_col,
-        "region_col": region_col,
-        "rep_col": rep_col,
-    })
