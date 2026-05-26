@@ -109,6 +109,10 @@ def add_percent_column(df: pd.DataFrame, source_col: str, new_col: str) -> pd.Da
     return df
 
 
+# =========================
+# HEADER
+# =========================
+
 st.title("⚡ DFY Sparks DLAR Dashboard")
 st.caption("Restricted dashboard for DFY Sparks / DFY-Sparks Inc / DFY Sparks 101")
 
@@ -120,6 +124,11 @@ if df.empty:
 
 df = clean_columns(df)
 
+
+# =========================
+# COLUMN DETECTION
+# =========================
+
 sub_agent_col = find_col(df, ["Sub-Agent Name", "Sub Agent Name", "Sub-Agent", "Sub Agent"])
 entity_col = find_col(df, ["Entity", "Dealer Entity", "Owner Entity", "Ownership Entity", "Entity Name"])
 master_agent_col = find_col(df, ["Master Agent", "Master Agent Name"])
@@ -129,6 +138,10 @@ address_col = find_col(df, ["Address", "Store Address"])
 status_col = find_col(df, ["Status"])
 city_col = find_col(df, ["City"])
 market_col = find_col(df, ["Market"])
+region_col = find_col(df, ["Region"])
+state_col = find_col(df, ["State"])
+zip_col = find_col(df, ["Zip Code", "Zip"])
+rep_col = find_col(df, ["MA Field Rep", "Field Rep", "Rep", "DM"])
 
 current_acts_col = find_col(df, ["Current Acts", "Current Activations", "Current Activation", "Activations", "Acts"])
 pacing_acts_col = find_col(df, ["Pacing Acts", "Pacing Act", "Pacing Activations"])
@@ -153,6 +166,11 @@ if df_entity.empty:
     st.warning("No DFY Sparks records found.")
     st.stop()
 
+
+# =========================
+# NUMERIC CLEANING
+# =========================
+
 for col in [
     current_acts_col,
     pacing_acts_col,
@@ -166,33 +184,49 @@ for col in [
     if col and col in df_entity.columns:
         df_entity[col] = to_number(df_entity[col])
 
+
+# =========================
+# SIDEBAR FILTERS
+# =========================
+
 st.sidebar.header("Dashboard Filters")
+st.sidebar.caption("DFY Sparks only")
 
 filtered = df_entity.copy()
 
 if status_col:
     status_options = sorted(filtered[status_col].dropna().astype(str).unique())
     selected_status = st.sidebar.multiselect("Status", status_options, default=status_options)
-    filtered = filtered[filtered[status_col].astype(str).isin(selected_status)]
+    if selected_status:
+        filtered = filtered[filtered[status_col].astype(str).isin(selected_status)]
 
 if city_col:
     city_options = sorted(filtered[city_col].dropna().astype(str).unique())
     selected_city = st.sidebar.multiselect("City", city_options, default=city_options)
-    filtered = filtered[filtered[city_col].astype(str).isin(selected_city)]
+    if selected_city:
+        filtered = filtered[filtered[city_col].astype(str).isin(selected_city)]
 
 if market_col:
     market_options = sorted(filtered[market_col].dropna().astype(str).unique())
     selected_market = st.sidebar.multiselect("Market", market_options, default=market_options)
-    filtered = filtered[filtered[market_col].astype(str).isin(selected_market)]
+    if selected_market:
+        filtered = filtered[filtered[market_col].astype(str).isin(selected_market)]
 
 search_term = st.sidebar.text_input("Search door / address")
 
 if search_term:
     search_columns = [c for c in [door_tsp_col, address_col] if c]
     mask = pd.Series(False, index=filtered.index)
+
     for c in search_columns:
         mask = mask | filtered[c].astype(str).str.contains(search_term, case=False, na=False)
+
     filtered = filtered[mask]
+
+
+# =========================
+# KPI CALCULATION
+# =========================
 
 total_stores = filtered[door_tsp_col].nunique() if door_tsp_col else len(filtered)
 total_current_acts = filtered[current_acts_col].sum() if current_acts_col else 0
@@ -215,12 +249,22 @@ if current_4mr_pct_col:
 else:
     avg_4mr = 0
 
+
+# =========================
+# KPI DISPLAY
+# =========================
+
 k1, k2, k3, k4 = st.columns(4)
 
 k1.metric("Stores", f"{total_stores:,.0f}")
 k2.metric("Current Acts", f"{total_current_acts:,.0f}")
 k3.metric("Avg Pacing", pct_text(avg_pacing))
 k4.metric("Average 4MR %", pct_text(avg_4mr))
+
+
+# =========================
+# STORE DETAIL TABLE
+# =========================
 
 st.divider()
 st.subheader("DFY Sparks Store Detail")
@@ -236,42 +280,90 @@ elif current_acts_col and pacing_acts_col:
 if current_4mr_pct_col:
     table = add_percent_column(table, current_4mr_pct_col, "Current 4MR %")
 
-display_map = []
+base_display_map = []
 
 if door_tsp_col:
-    display_map.append((door_tsp_col, "Door TSP"))
+    base_display_map.append((door_tsp_col, "Door TSP"))
 if address_col:
-    display_map.append((address_col, "Address"))
+    base_display_map.append((address_col, "Address"))
 if current_acts_col:
-    display_map.append((current_acts_col, "Current Acts"))
+    base_display_map.append((current_acts_col, "Current Acts"))
 if pacing_acts_col:
-    display_map.append((pacing_acts_col, "Pacing Acts"))
+    base_display_map.append((pacing_acts_col, "Pacing Acts"))
 
-display_map.append(("Pacing % to Quota", "Pacing % to Quota"))
-display_map.append(("Current 4MR %", "Current 4MR %"))
+base_display_map.append(("Pacing % to Quota", "Pacing % to Quota"))
+base_display_map.append(("Current 4MR %", "Current 4MR %"))
 
 if current_topups_col:
-    display_map.append((current_topups_col, "Current Topups"))
+    base_display_map.append((current_topups_col, "Current Topups"))
 if edge_apply_col:
-    display_map.append((edge_apply_col, "Current Edge Apply"))
+    base_display_map.append((edge_apply_col, "Current Edge Apply"))
 if edge_approve_col:
-    display_map.append((edge_approve_col, "Current Edge Approve"))
+    base_display_map.append((edge_approve_col, "Current Edge Approve"))
 if edge_acts_col:
-    display_map.append((edge_acts_col, "Current Edge Acts"))
+    base_display_map.append((edge_acts_col, "Current Edge Acts"))
 
-final_cols = {}
+base_cols = []
+rename_map = {}
 
-for source, label in display_map:
-    if source in table.columns:
-        final_cols[source] = label
+for source, label in base_display_map:
+    if source in table.columns and source not in base_cols:
+        base_cols.append(source)
+        rename_map[source] = label
 
-if final_cols:
-    detail_df = table[list(final_cols.keys())].rename(columns=final_cols)
+st.sidebar.divider()
+st.sidebar.subheader("Additional Columns")
+
+suggested_extra_cols = [
+    c for c in [
+        status_col,
+        city_col,
+        state_col,
+        zip_col,
+        market_col,
+        region_col,
+        rep_col,
+        sub_agent_col,
+        entity_col,
+        master_agent_col,
+    ]
+    if c and c in table.columns and c not in base_cols
+]
+
+all_extra_cols = [
+    col for col in table.columns
+    if col not in base_cols
+]
+
+default_extra_cols = [
+    col for col in suggested_extra_cols
+    if col in all_extra_cols
+]
+
+extra_cols = st.sidebar.multiselect(
+    "Select more info to show",
+    options=all_extra_cols,
+    default=[],
+)
+
+final_selected_cols = base_cols + extra_cols
+
+if final_selected_cols:
+    detail_df = table[final_selected_cols].rename(columns=rename_map)
 
     if "Current Acts" in detail_df.columns:
         detail_df = detail_df.sort_values("Current Acts", ascending=False)
 
-    st.dataframe(detail_df, use_container_width=True, hide_index=True)
+    row_count = len(detail_df)
+
+    table_height = max(420, row_count * 38 + 45)
+
+    st.dataframe(
+        detail_df,
+        use_container_width=True,
+        hide_index=True,
+        height=table_height
+    )
 
     st.download_button(
         label="Download DFY Sparks Store Detail CSV",
@@ -283,6 +375,11 @@ else:
     st.warning("Could not build the requested store detail table.")
 
 st.caption(f"Last refreshed: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
+
+
+# =========================
+# DEBUG
+# =========================
 
 with st.expander("Debug / Column Mapping"):
     st.json({
@@ -297,4 +394,11 @@ with st.expander("Debug / Column Mapping"):
         "edge_apply_col": edge_apply_col,
         "edge_approve_col": edge_approve_col,
         "edge_acts_col": edge_acts_col,
+        "status_col": status_col,
+        "city_col": city_col,
+        "state_col": state_col,
+        "zip_col": zip_col,
+        "market_col": market_col,
+        "region_col": region_col,
+        "rep_col": rep_col,
     })
