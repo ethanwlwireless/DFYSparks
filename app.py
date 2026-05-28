@@ -24,25 +24,24 @@ DFY_KEYWORDS = [
 
 
 @st.cache_data(ttl=300)
-def load_data(url: str):
+def load_data(url: str) -> pd.DataFrame:
     try:
         raw = pd.read_csv(url, header=None, dtype=str)
 
-        avg_row = raw.iloc[3].copy()
         headers = raw.iloc[4].astype(str).str.strip()
 
         df = raw.iloc[5:].copy()
         df.columns = headers
         df.columns = df.columns.astype(str).str.strip()
 
-        avg_df = pd.DataFrame([avg_row.values], columns=headers)
-        avg_df.columns = avg_df.columns.astype(str).str.strip()
+        df = df.loc[:, df.columns.notna()]
+        df = df.loc[:, df.columns != "nan"]
 
-        return df, avg_df
+        return df
 
     except Exception as e:
         st.error(f"Unable to load Google Sheet data: {e}")
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame()
 
 
 def normalize_series(series: pd.Series) -> pd.Series:
@@ -55,7 +54,10 @@ def normalize_series(series: pd.Series) -> pd.Series:
 
 
 def find_col(df: pd.DataFrame, possible_names: list[str]):
-    normalized_columns = {col.strip().lower(): col for col in df.columns}
+    normalized_columns = {
+        col.strip().lower(): col
+        for col in df.columns
+    }
 
     for name in possible_names:
         if name.lower() in normalized_columns:
@@ -77,22 +79,10 @@ def to_number(series: pd.Series) -> pd.Series:
         .str.replace(",", "", regex=False)
         .str.replace("$", "", regex=False)
         .str.strip()
-        .replace(["", "nan", "None", "NaN", "-", "#DIV/0!"], "0")
+        .replace(["", "nan", "None", "NaN", "-", "#DIV/0!", "#N/A"], "0")
         .pipe(pd.to_numeric, errors="coerce")
         .fillna(0)
     )
-
-
-def get_avg_value(avg_df: pd.DataFrame, col_name):
-    if not col_name or avg_df.empty or col_name not in avg_df.columns:
-        return 0
-
-    value = to_number(avg_df[col_name]).iloc[0]
-
-    if abs(value) <= 1 and value != 0:
-        value = value * 100
-
-    return value
 
 
 def pct_text(value):
@@ -108,8 +98,13 @@ def build_dfy_mask(df: pd.DataFrame, candidate_cols: list[str]) -> pd.Series:
     for col in candidate_cols:
         if col and col in df.columns:
             values = normalize_series(df[col])
+
             for keyword in DFY_KEYWORDS:
-                mask = mask | values.str.contains(keyword, na=False, regex=False)
+                mask = mask | values.str.contains(
+                    keyword,
+                    na=False,
+                    regex=False
+                )
 
     return mask
 
@@ -120,22 +115,33 @@ def add_percent_column(df: pd.DataFrame, source_col: str, new_col: str) -> pd.Da
 
     numeric = to_number(df[source_col])
 
-    if len(numeric[numeric != 0]) > 0 and numeric[numeric != 0].abs().max() <= 1:
+    nonzero = numeric[numeric != 0]
+
+    if len(nonzero) > 0 and nonzero.abs().max() <= 1:
         numeric = numeric * 100
 
     df[new_col] = numeric.map(lambda x: f"{x:.1f}%")
+
     return df
 
+
+# =========================
+# HEADER
+# =========================
 
 st.title("⚡ DFY Sparks DLAR Dashboard")
 st.caption("Restricted dashboard for DFY Sparks / DFY-Sparks Inc / DFY Sparks 101")
 
-df, avg_df = load_data(SHEET_CSV_URL)
+df = load_data(SHEET_CSV_URL)
 
 if df.empty:
     st.warning("No data loaded. Check Google Sheet sharing: Anyone with the link → Viewer.")
     st.stop()
 
+
+# =========================
+# COLUMN DETECTION
+# =========================
 
 sub_agent_col = find_col(df, ["Sub-Agent Name", "Sub Agent Name", "Sub-Agent", "Sub Agent"])
 entity_col = find_col(df, ["Entity", "Dealer Entity", "Owner Entity", "Ownership Entity", "Entity Name"])
@@ -164,12 +170,22 @@ edge_acts_col = find_col(df, ["Current Edge Acts", "Edge Acts", "Current Edge Ac
 
 
 candidate_entity_cols = list(dict.fromkeys([
-    c for c in [sub_agent_col, entity_col, master_agent_col] if c
+    c for c in [
+        sub_agent_col,
+        entity_col,
+        master_agent_col
+    ]
+    if c
 ]))
 
 if not candidate_entity_cols:
     st.error("Could not find Sub-Agent Name, Entity, or Master Agent column.")
     st.stop()
+
+
+# =========================
+# FILTER DFY SPARKS ONLY
+# =========================
 
 df_entity = df[build_dfy_mask(df, candidate_entity_cols)].copy()
 
@@ -177,6 +193,10 @@ if df_entity.empty:
     st.warning("No DFY Sparks records found.")
     st.stop()
 
+
+# =========================
+# NUMERIC CLEANING
+# =========================
 
 for col in [
     current_acts_col,
@@ -191,6 +211,10 @@ for col in [
     if col and col in df_entity.columns:
         df_entity[col] = to_number(df_entity[col])
 
+
+# =========================
+# SEARCH
+# =========================
 
 filtered = df_entity.copy()
 
@@ -227,12 +251,60 @@ if search_term:
     filtered = filtered[mask]
 
 
-total_stores = filtered[door_tsp_col].nunique() if door_tsp_col else len(filtered)
-total_current_acts = filtered[current_acts_col].sum() if current_acts_col else 0
+# =========================
+# KPI CALCULATION
+# =========================
 
-avg_pacing = get_avg_value(avg_df, pacing_pct_col)
-avg_4mr = get_avg_value(avg_df, current_4mr_pct_col)
+total_stores = (
+    filtered[door_tsp_col].nunique()
+    if door_tsp_col
+    else len(filtered)
+)
 
+total_current_acts = (
+    filtered[current_acts_col].sum()
+    if current_acts_col
+    else 0
+)
+
+# Avg Pacing = Sum of Current Acts / Sum of Pacing Acts * 100
+if (
+    current_acts_col
+    and pacing_acts_col
+    and pacing_acts_col in filtered.columns
+    and filtered[pacing_acts_col].sum() != 0
+):
+    avg_pacing = (
+        filtered[current_acts_col].sum()
+        / filtered[pacing_acts_col].sum()
+    ) * 100
+else:
+    avg_pacing = 0
+
+
+# Average 4MR % = Average of Current 4MR%, excluding 0%
+if current_4mr_pct_col and current_4mr_pct_col in filtered.columns:
+    four_mr_values = filtered[current_4mr_pct_col].copy()
+
+    nonzero_4mr = four_mr_values[four_mr_values != 0]
+
+    if len(nonzero_4mr) > 0 and nonzero_4mr.abs().max() <= 1:
+        four_mr_values = four_mr_values * 100
+
+    four_mr_values = four_mr_values[four_mr_values != 0]
+
+    avg_4mr = (
+        four_mr_values.mean()
+        if len(four_mr_values) > 0
+        else 0
+    )
+else:
+    avg_4mr = 0
+
+
+# =========================
+# KPI DISPLAY
+# =========================
 
 k1, k2, k3, k4 = st.columns(4)
 
@@ -242,31 +314,48 @@ k3.metric("Avg Pacing", pct_text(avg_pacing))
 k4.metric("Average 4MR %", pct_text(avg_4mr))
 
 
+# =========================
+# STORE DETAIL TABLE
+# =========================
+
 st.divider()
 st.subheader("DFY Sparks Store Detail")
 
 table = filtered.copy()
 
 if pacing_pct_col:
-    table = add_percent_column(table, pacing_pct_col, "Pacing % to Quota")
+    table = add_percent_column(
+        table,
+        pacing_pct_col,
+        "Pacing % to Quota"
+    )
 elif current_acts_col and pacing_acts_col:
     denom = table[pacing_acts_col].replace(0, pd.NA)
+
     table["Pacing % to Quota"] = (
         (table[current_acts_col] / denom) * 100
     ).fillna(0).map(lambda x: f"{x:.1f}%")
 
+
 if current_4mr_pct_col:
-    table = add_percent_column(table, current_4mr_pct_col, "Current 4MR %")
+    table = add_percent_column(
+        table,
+        current_4mr_pct_col,
+        "Current 4MR %"
+    )
 
 
 base_display_map = []
 
 if door_tsp_col:
     base_display_map.append((door_tsp_col, "Door TSP"))
+
 if address_col:
     base_display_map.append((address_col, "Address"))
+
 if current_acts_col:
     base_display_map.append((current_acts_col, "Current Acts"))
+
 if pacing_acts_col:
     base_display_map.append((pacing_acts_col, "Pacing Acts"))
 
@@ -275,10 +364,13 @@ base_display_map.append(("Current 4MR %", "Current 4MR %"))
 
 if current_topups_col:
     base_display_map.append((current_topups_col, "Current Topups"))
+
 if edge_apply_col:
     base_display_map.append((edge_apply_col, "Current Edge Apply"))
+
 if edge_approve_col:
     base_display_map.append((edge_approve_col, "Current Edge Approve"))
+
 if edge_acts_col:
     base_display_map.append((edge_acts_col, "Current Edge Acts"))
 
@@ -291,6 +383,10 @@ for source, label in base_display_map:
         base_cols.append(source)
         rename_map[source] = label
 
+
+# =========================
+# ADDITIONAL COLUMNS
+# =========================
 
 st.sidebar.divider()
 st.sidebar.header("Additional Columns")
@@ -332,5 +428,6 @@ if final_selected_cols:
     )
 else:
     st.warning("Could not build the requested store detail table.")
+
 
 st.caption(f"DLAR updated: {datetime.now().strftime('%Y-%m-%d')}")
