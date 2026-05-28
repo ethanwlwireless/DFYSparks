@@ -24,18 +24,25 @@ DFY_KEYWORDS = [
 
 
 @st.cache_data(ttl=300)
-def load_data(url: str) -> pd.DataFrame:
+def load_data(url: str):
     try:
-        return pd.read_csv(url)
+        raw = pd.read_csv(url, header=None, dtype=str)
+
+        avg_row = raw.iloc[3].copy()
+        headers = raw.iloc[4].astype(str).str.strip()
+
+        df = raw.iloc[5:].copy()
+        df.columns = headers
+        df.columns = df.columns.astype(str).str.strip()
+
+        avg_df = pd.DataFrame([avg_row.values], columns=headers)
+        avg_df.columns = avg_df.columns.astype(str).str.strip()
+
+        return df, avg_df
+
     except Exception as e:
         st.error(f"Unable to load Google Sheet data: {e}")
-        return pd.DataFrame()
-
-
-def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = df.columns.astype(str).str.strip()
-    return df
+        return pd.DataFrame(), pd.DataFrame()
 
 
 def normalize_series(series: pd.Series) -> pd.Series:
@@ -70,10 +77,22 @@ def to_number(series: pd.Series) -> pd.Series:
         .str.replace(",", "", regex=False)
         .str.replace("$", "", regex=False)
         .str.strip()
-        .replace(["", "nan", "None", "NaN", "-"], "0")
+        .replace(["", "nan", "None", "NaN", "-", "#DIV/0!"], "0")
         .pipe(pd.to_numeric, errors="coerce")
         .fillna(0)
     )
+
+
+def get_avg_value(avg_df: pd.DataFrame, col_name):
+    if not col_name or avg_df.empty or col_name not in avg_df.columns:
+        return 0
+
+    value = to_number(avg_df[col_name]).iloc[0]
+
+    if abs(value) <= 1 and value != 0:
+        value = value * 100
+
+    return value
 
 
 def pct_text(value):
@@ -100,34 +119,23 @@ def add_percent_column(df: pd.DataFrame, source_col: str, new_col: str) -> pd.Da
         return df
 
     numeric = to_number(df[source_col])
-    nonzero = numeric[numeric != 0]
 
-    if len(nonzero) > 0 and nonzero.abs().max() <= 1:
+    if len(numeric[numeric != 0]) > 0 and numeric[numeric != 0].abs().max() <= 1:
         numeric = numeric * 100
 
     df[new_col] = numeric.map(lambda x: f"{x:.1f}%")
     return df
 
 
-# =========================
-# HEADER
-# =========================
-
 st.title("⚡ DFY Sparks DLAR Dashboard")
 st.caption("Restricted dashboard for DFY Sparks / DFY-Sparks Inc / DFY Sparks 101")
 
-df = load_data(SHEET_CSV_URL)
+df, avg_df = load_data(SHEET_CSV_URL)
 
 if df.empty:
     st.warning("No data loaded. Check Google Sheet sharing: Anyone with the link → Viewer.")
     st.stop()
 
-df = clean_columns(df)
-
-
-# =========================
-# COLUMN DETECTION
-# =========================
 
 sub_agent_col = find_col(df, ["Sub-Agent Name", "Sub Agent Name", "Sub-Agent", "Sub Agent"])
 entity_col = find_col(df, ["Entity", "Dealer Entity", "Owner Entity", "Ownership Entity", "Entity Name"])
@@ -146,11 +154,14 @@ rep_col = find_col(df, ["MA Field Rep", "Field Rep", "Rep", "DM"])
 current_acts_col = find_col(df, ["Current Acts", "Current Activations", "Current Activation", "Activations", "Acts"])
 pacing_acts_col = find_col(df, ["Pacing Acts", "Pacing Act", "Pacing Activations"])
 pacing_pct_col = find_col(df, ["Pacing % to Quota", "Pacing %", "Activation % to Target", "Act % to Target"])
-current_4mr_pct_col = find_col(df, ["Current 4MR%", "Current 4MR %", "4MR %", "4MR%", "Current 3MR %", "3MR %"])
+
+current_4mr_pct_col = find_col(df, ["Current 4MR%", "Current 4MR %", "4MR %", "4MR%"])
+
 current_topups_col = find_col(df, ["Current Topups", "Current Top Ups", "Current Top-Ups", "Topups", "Top Ups"])
 edge_apply_col = find_col(df, ["Current Edge Apply", "Edge Apply", "Current Edge Applies", "Edge Applies"])
 edge_approve_col = find_col(df, ["Current Edge Approve", "Edge Approve", "Current Edge Approved", "Edge Approved", "Edge Approvals"])
 edge_acts_col = find_col(df, ["Current Edge Acts", "Edge Acts", "Current Edge Activations", "Edge Activations"])
+
 
 candidate_entity_cols = list(dict.fromkeys([
     c for c in [sub_agent_col, entity_col, master_agent_col] if c
@@ -167,10 +178,6 @@ if df_entity.empty:
     st.stop()
 
 
-# =========================
-# NUMERIC CLEANING
-# =========================
-
 for col in [
     current_acts_col,
     pacing_acts_col,
@@ -184,10 +191,6 @@ for col in [
     if col and col in df_entity.columns:
         df_entity[col] = to_number(df_entity[col])
 
-
-# =========================
-# SIMPLE SEARCH ONLY
-# =========================
 
 filtered = df_entity.copy()
 
@@ -224,35 +227,12 @@ if search_term:
     filtered = filtered[mask]
 
 
-# =========================
-# KPI CALCULATION
-# =========================
-
 total_stores = filtered[door_tsp_col].nunique() if door_tsp_col else len(filtered)
 total_current_acts = filtered[current_acts_col].sum() if current_acts_col else 0
 
-if current_acts_col and pacing_acts_col and filtered[pacing_acts_col].sum() != 0:
-    avg_pacing = (filtered[current_acts_col].sum() / filtered[pacing_acts_col].sum()) * 100
-elif pacing_pct_col:
-    avg_pacing = filtered[pacing_pct_col].mean()
-else:
-    avg_pacing = 0
+avg_pacing = get_avg_value(avg_df, pacing_pct_col)
+avg_4mr = get_avg_value(avg_df, current_4mr_pct_col)
 
-if current_4mr_pct_col:
-    four_mr_values = filtered[current_4mr_pct_col].copy()
-    nonzero_4mr = four_mr_values[four_mr_values != 0]
-
-    if len(nonzero_4mr) > 0 and nonzero_4mr.abs().max() <= 1:
-        four_mr_values = four_mr_values * 100
-
-    avg_4mr = four_mr_values.mean()
-else:
-    avg_4mr = 0
-
-
-# =========================
-# KPI DISPLAY
-# =========================
 
 k1, k2, k3, k4 = st.columns(4)
 
@@ -261,10 +241,6 @@ k2.metric("Current Acts", f"{total_current_acts:,.0f}")
 k3.metric("Avg Pacing", pct_text(avg_pacing))
 k4.metric("Average 4MR %", pct_text(avg_4mr))
 
-
-# =========================
-# STORE DETAIL TABLE
-# =========================
 
 st.divider()
 st.subheader("DFY Sparks Store Detail")
@@ -275,10 +251,13 @@ if pacing_pct_col:
     table = add_percent_column(table, pacing_pct_col, "Pacing % to Quota")
 elif current_acts_col and pacing_acts_col:
     denom = table[pacing_acts_col].replace(0, pd.NA)
-    table["Pacing % to Quota"] = ((table[current_acts_col] / denom) * 100).fillna(0).map(lambda x: f"{x:.1f}%")
+    table["Pacing % to Quota"] = (
+        (table[current_acts_col] / denom) * 100
+    ).fillna(0).map(lambda x: f"{x:.1f}%")
 
 if current_4mr_pct_col:
     table = add_percent_column(table, current_4mr_pct_col, "Current 4MR %")
+
 
 base_display_map = []
 
@@ -303,6 +282,7 @@ if edge_approve_col:
 if edge_acts_col:
     base_display_map.append((edge_acts_col, "Current Edge Acts"))
 
+
 base_cols = []
 rename_map = {}
 
@@ -312,28 +292,8 @@ for source, label in base_display_map:
         rename_map[source] = label
 
 
-# =========================
-# ADDITIONAL COLUMN SELECTOR
-# =========================
-
 st.sidebar.divider()
 st.sidebar.header("Additional Columns")
-
-suggested_extra_cols = [
-    c for c in [
-        status_col,
-        city_col,
-        state_col,
-        zip_col,
-        market_col,
-        region_col,
-        rep_col,
-        sub_agent_col,
-        entity_col,
-        master_agent_col,
-    ]
-    if c and c in table.columns and c not in base_cols
-]
 
 all_extra_cols = [
     col for col in table.columns
@@ -373,6 +333,4 @@ if final_selected_cols:
 else:
     st.warning("Could not build the requested store detail table.")
 
-st.caption(f"Last refreshed: {datetime.now().strftime('%Y-%m-%d %I:%M %p')}")
-
-
+st.caption(f"DLAR updated: {datetime.now().strftime('%Y-%m-%d')}")
